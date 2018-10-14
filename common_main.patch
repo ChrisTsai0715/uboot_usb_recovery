@@ -1,0 +1,110 @@
+*** boot/uboot/u-boot-2010.06/common/main.c	2015-10-14 11:13:37.000000000 +0800
+--- uboot-custom/common/main.c	2018-05-10 13:46:34.944580179 +0800
+***************
+*** 272,277 ****
+--- 272,278 ----
+  #endif	/* CONFIG_BOOTDELAY >= 0  */
+  
+  /****************************************************************************/
++ int recovery_from_udisk();
+  
+  void main_loop (void)
+  {
+***************
+*** 373,378 ****
+--- 374,381 ----
+  	update_tftp ();
+  #endif /* CONFIG_UPDATE_TFTP */
+  
++ 	printf("[usb recovery]check reset key...\n");
++ 	recovery_from_udisk();
+  #if defined(CONFIG_BOOTDELAY) && (CONFIG_BOOTDELAY >= 0)
+  	s = getenv ("bootdelay");
+  	bootdelay = s ? (int)simple_strtol(s, NULL, 10) : CONFIG_BOOTDELAY;
+***************
+*** 1575,1580 ****
+--- 1578,1661 ----
+  
+  /****************************************************************************/
+  
++ int recovery_from_udisk()
++ {
++ 	int c = 0;
++ 	//设置PWM0、1、2为GPIO输出，PWM3为GPIO输入，为reset键
++ 	run_command("mw 0x200f014C 1", 0);
++ 	run_command("mw 0x200f0150 1", 0);
++ 	run_command("mw 0x200f0154 1", 0);
++ 	run_command("mw 0x200f0158 1", 0);
++ 	run_command("mw 0x20220400 0x07", 0);
++ 
++ 	//设置颜色为RG亮，B灭
++ 	run_command("mw 0x202203FC 0x02", 0);
++ 
++ 	//检测reset键是否按下
++ 	if (((*(int*)0x202203fc) >> 3) & 0x1 != 0x0) 
++ 	{
++ 		printf("[usb recovery]reset key not press\n");
++ 		return -1;
++ 	}
++ 	//延迟100ms以消抖
++ 	udelay(100 * 1000);
++ 	if (((*(int*)0x202203fc) >> 3) & 0x1 != 0x0) 
++ 	{
++ 		printf("[usb recovery]reset key not press\n");
++ 		return -1;	
++ 	}
++ 
++ 	//红灯闪烁几次
++ 	for (c = 0; c < 10; c++)
++ 	{
++ 		run_command("mw 0x202203FC 0x07", 0);
++ 		udelay(200 * 1000);
++ 		run_command("mw 0x202203FC 0x03", 0);
++ 		udelay(200 * 1000);
++ 	}
++ 
++ 	printf("[usb recovery]reset key press detected!\n");
++ 	if (run_command("usb start", 0) == -1) 
++ 	{
++ 		printf("[usb recovery]usb start failed...\n");
++ 		return -2;
++ 	}
++ 	int ret = 0;
++ 	do
++ 	{
++ 		/*recovery kernel*/
++ 		if (run_command("mw.b 82000000 ff 300000", 0) == -1) break;
++ 		if (run_command("fatload usb 0 0x82000000 kernel.bin", 0) == -1)
++ 		{
++ 			printf("[usb recovery]kernel.bin not find...\n");
++ 			break;
++ 		}
++ 		printf("[usb recovery]kernel.bin found, recovery now...\n");
++ 		if (run_command("sf probe 0", 0) == -1) break;
++ 		if (run_command("sf erase 100000 300000", 0) == -1) break;
++ 		if (run_command("sf write 82000000 100000 300000", 0) == -1) break;
++ 
++ 		/*recovery rootfs*/
++ 		if (run_command("mw.b 82000000 ff a00000", 0) == -1) break;
++ 		if (run_command("fatload usb 0 0x82000000 rootfs.bin", 0) == -1)
++ 		{
++ 			printf("[usb recovery]rootfs.bin not find...\n");
++ 			break;
++ 		}
++ 		printf("[usb recovery]rootfs.bin found, recovery now...\n");
++ 		if (run_command("sf probe 0", 0) == -1) break;
++ 		if (run_command("sf erase 400000 a00000", 0) == -1) break;
++ 		if (run_command("sf write 82000000 400000 a00000", 0) == -1) break;
++ 		printf("[usb recovery]recovery complete!\n");
++ 	}while(0);
++ 
++ 	run_command("usb stop", 0);	
++ 	run_command("reset", 0);	
++ 
++ 	return ret;
++ }
++ 
++ 
+  #if defined(CONFIG_CMD_RUN)
+  int do_run (cmd_tbl_t * cmdtp, int flag, int argc, char *argv[])
+  {
